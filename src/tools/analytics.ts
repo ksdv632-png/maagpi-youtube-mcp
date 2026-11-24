@@ -9,16 +9,13 @@ import { getCached, setCached } from "../quota/cache.js";
 import { trackQuota, getQuotaSummary } from "../quota/tracker.js";
 import { QUOTA_COSTS } from "../quota/constants.js";
 import { YouTubeMcpError } from "../errors/types.js";
-import { buildErrorResponse } from "../errors/handlers.js";
+import { buildErrorResponse, toMcpError } from "../errors/handlers.js";
+import { toolResult } from "./result.js";
 import { YouTubeMcpErrorCode } from "../errors/codes.js";
 import {
   VideoMetricsSchema, ChannelMetricsSchema, TopVideosSchema,
   AudienceRetentionSchema, RevenueReportSchema,
 } from "../schemas/analytics.js";
-
-function toolResult(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
-}
 
 const ANALYTICS_METHOD = "youtubeAnalytics.reports.query";
 const COST = QUOTA_COSTS[ANALYTICS_METHOD] ?? 1;
@@ -44,8 +41,7 @@ export function registerAnalyticsTools(server: McpServer): void {
         setCached(ANALYTICS_METHOD, cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(COST) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -71,8 +67,7 @@ export function registerAnalyticsTools(server: McpServer): void {
         setCached(ANALYTICS_METHOD, cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(COST) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -96,8 +91,7 @@ export function registerAnalyticsTools(server: McpServer): void {
         setCached(ANALYTICS_METHOD, cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(COST) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -121,8 +115,7 @@ export function registerAnalyticsTools(server: McpServer): void {
         setCached(ANALYTICS_METHOD, cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(COST) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -146,8 +139,7 @@ export function registerAnalyticsTools(server: McpServer): void {
         setCached(ANALYTICS_METHOD, cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(COST) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );

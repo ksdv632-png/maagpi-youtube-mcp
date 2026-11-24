@@ -1,6 +1,8 @@
 export const QUOTA_COSTS: Record<string, number> = {
   // Videos
   "videos.list": 1,
+  "search.list": 100,
+  "channelBanners.insert": 50,
   "videos.insert": 1600,
   "videos.update": 50,
   "videos.delete": 50,

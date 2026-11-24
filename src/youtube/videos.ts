@@ -1,20 +1,18 @@
-import fs from "node:fs";
-import { logger } from "../logger.js";
+import { Readable } from "node:stream";
 import { wrapApiCall } from "../errors/handlers.js";
 import { withBackoff } from "../quota/backoff.js";
 import type { YouTubeClient } from "./client.js";
 import type { youtube_v3 } from "@googleapis/youtube";
 
 export interface UploadVideoParams {
-  filePath: string;
   title: string;
   description?: string;
   tags?: string[];
   categoryId?: string;
-  privacyStatus: "public" | "private" | "unlisted";
   language?: string;
-  thumbnailPath?: string;
   notifySubscribers?: boolean;
+  madeForKids?: boolean;
+  isShort?: boolean;
 }
 
 export interface UpdateVideoParams {
@@ -26,51 +24,48 @@ export interface UpdateVideoParams {
   defaultLanguage?: string;
 }
 
+export interface UploadMedia {
+  body: Readable;
+  mimeType?: string;
+}
+
+/** YouTube has no Shorts flag; the hashtag helps classification, the format (vertical, <=3 min) decides. */
+export function withShortsTag(description: string | undefined): string {
+  const text = description ?? "";
+  return /#shorts\b/i.test(text) ? text : `${text}${text ? "\n\n" : ""}#Shorts`;
+}
+
+/**
+ * Uploads a video. It is ALWAYS created as private: publishing is a separate step that needs the
+ * owner's approval (see publishing/gate.ts). A single attempt only — a consumed stream cannot be
+ * replayed, so there is deliberately no automatic retry here.
+ */
 export async function uploadVideo(
   yt: YouTubeClient,
-  params: UploadVideoParams
+  params: UploadVideoParams,
+  media: UploadMedia
 ): Promise<youtube_v3.Schema$Video> {
-  const stat = fs.statSync(params.filePath);
-  const media = fs.createReadStream(params.filePath);
-
-  return wrapApiCall("videos.insert", () =>
-    withBackoff(async () => {
-      const response = await yt.videos.insert(
-        {
-          part: ["snippet", "status"],
-          requestBody: {
-            snippet: {
-              title: params.title,
-              description: params.description ?? "",
-              tags: params.tags ?? [],
-              categoryId: params.categoryId ?? "22",
-              defaultLanguage: params.language ?? "en",
-            },
-            status: {
-              privacyStatus: params.privacyStatus,
-              selfDeclaredMadeForKids: false,
-            },
-          },
-          media: {
-            mimeType: "video/*",
-            body: media,
-          },
+  return wrapApiCall("videos.insert", async () => {
+    const response = await yt.videos.insert({
+      part: ["snippet", "status"],
+      notifySubscribers: params.notifySubscribers ?? true,
+      requestBody: {
+        snippet: {
+          title: params.title,
+          description: params.isShort ? withShortsTag(params.description) : (params.description ?? ""),
+          tags: params.tags ?? [],
+          categoryId: params.categoryId ?? "22",
+          ...(params.language ? { defaultLanguage: params.language } : {}),
         },
-        {
-          onUploadProgress(evt: { bytesRead: number }) {
-            const pct = Math.round((evt.bytesRead / stat.size) * 100);
-            if (pct % 10 === 0) {
-              logger.info(`Upload progress: ${pct}%`, {
-                file: params.filePath,
-                bytes: evt.bytesRead,
-              });
-            }
-          },
-        }
-      );
-      return response.data;
-    }, "videos.insert")
-  );
+        status: {
+          privacyStatus: "private",
+          selfDeclaredMadeForKids: params.madeForKids ?? false,
+        },
+      },
+      media: { mimeType: media.mimeType ?? "video/*", body: media.body },
+    });
+    return response.data;
+  });
 }
 
 export async function getVideo(
@@ -86,6 +81,20 @@ export async function getVideo(
   );
 }
 
+export interface ListVideosResult {
+  items: youtube_v3.Schema$Video[];
+  nextPageToken?: string;
+  totalResults: number;
+  /** Quota units this call really cost (search is 100, playlist listing is 2). */
+  quotaCost: number;
+}
+
+async function hydrateVideos(yt: YouTubeClient, ids: string[]): Promise<youtube_v3.Schema$Video[]> {
+  if (ids.length === 0) return [];
+  const details = await yt.videos.list({ part: ["snippet", "status", "statistics"], id: ids });
+  return details.data.items ?? [];
+}
+
 export async function listVideos(
   yt: YouTubeClient,
   params: {
@@ -98,15 +107,42 @@ export async function listVideos(
     publishedAfter?: string;
     publishedBefore?: string;
   }
-): Promise<{ items: youtube_v3.Schema$Video[]; nextPageToken?: string; totalResults: number }> {
+): Promise<ListVideosResult> {
   return wrapApiCall("videos.list", () =>
     withBackoff(async () => {
-      const forMine = !params.channelId && !params.query;
+      const useSearch = !!params.query || !!params.channelId;
+      if (!useSearch) {
+        // Cheap path (1 + 1 quota units): the channel's own "uploads" playlist, or any given playlist.
+        let playlistId = params.playlistId;
+        let cost = 1;
+        if (!playlistId) {
+          const channel = await yt.channels.list({ part: ["contentDetails"], mine: true });
+          playlistId = channel.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads ?? undefined;
+          cost += 1;
+        }
+        if (!playlistId) return { items: [], totalResults: 0, quotaCost: cost };
+        const page = await yt.playlistItems.list({
+          part: ["contentDetails"],
+          playlistId,
+          maxResults: params.maxResults ?? 25,
+          pageToken: params.pageToken,
+        });
+        const ids = (page.data.items ?? [])
+          .map((i) => i.contentDetails?.videoId)
+          .filter((id): id is string => !!id);
+        return {
+          items: await hydrateVideos(yt, ids),
+          nextPageToken: page.data.nextPageToken ?? undefined,
+          totalResults: page.data.pageInfo?.totalResults ?? ids.length,
+          quotaCost: cost + (ids.length ? 1 : 0),
+        };
+      }
+
       const response = await yt.search.list({
         part: ["snippet"],
         channelId: params.channelId,
         q: params.query,
-        forMine: forMine || undefined,
+        forMine: !params.channelId && !params.query ? true : undefined,
         maxResults: params.maxResults ?? 25,
         pageToken: params.pageToken,
         order: params.order ?? "date",
@@ -114,24 +150,14 @@ export async function listVideos(
         publishedBefore: params.publishedBefore,
         type: ["video"],
       });
-
-      const videoIds = (response.data.items ?? [])
+      const ids = (response.data.items ?? [])
         .map((i) => i.id?.videoId)
         .filter((id): id is string => !!id);
-
-      if (videoIds.length === 0) {
-        return { items: [], totalResults: 0 };
-      }
-
-      const detailsResponse = await yt.videos.list({
-        part: ["snippet", "status", "statistics"],
-        id: videoIds,
-      });
-
       return {
-        items: detailsResponse.data.items ?? [],
+        items: await hydrateVideos(yt, ids),
         nextPageToken: response.data.nextPageToken ?? undefined,
         totalResults: response.data.pageInfo?.totalResults ?? 0,
+        quotaCost: 100 + (ids.length ? 1 : 0),
       };
     }, "videos.list")
   );
@@ -165,17 +191,6 @@ export async function updateVideo(
   );
 }
 
-export async function deleteVideo(
-  yt: YouTubeClient,
-  videoId: string
-): Promise<void> {
-  return wrapApiCall("videos.delete", () =>
-    withBackoff(async () => {
-      await yt.videos.delete({ id: videoId });
-    }, "videos.delete")
-  );
-}
-
 export async function rateVideo(
   yt: YouTubeClient,
   videoId: string,
@@ -191,15 +206,13 @@ export async function rateVideo(
 export async function setThumbnail(
   yt: YouTubeClient,
   videoId: string,
-  thumbnailPath: string
+  image: { buffer: Buffer; mimeType: string }
 ): Promise<youtube_v3.Schema$ThumbnailSetResponse> {
-  const media = fs.createReadStream(thumbnailPath);
-
   return wrapApiCall("thumbnails.set", () =>
     withBackoff(async () => {
       const response = await yt.thumbnails.set({
         videoId,
-        media: { mimeType: "image/jpeg", body: media },
+        media: { mimeType: image.mimeType, body: Readable.from(image.buffer) },
       });
       return response.data;
     }, "thumbnails.set")

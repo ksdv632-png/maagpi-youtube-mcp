@@ -4,16 +4,24 @@ import type { StoredTokens, ChannelProfile, MultiProfileStore } from "./types.js
 const EXPIRY_BUFFER_MS = 60_000;
 const DEFAULT_PROFILE = "default";
 
-const store = new Conf<{
+type StoreShape = {
   tokens?: StoredTokens;
   profiles?: Record<string, ChannelProfile>;
   activeProfile?: string;
-}>({
-  projectName: "maagpi-youtube-mcp",
-  projectVersion: "1",
-});
+};
 
-function migrate(): void {
+// Created lazily: the remote (HTTP) server never touches the local config directory.
+let _store: Conf<StoreShape> | undefined;
+
+function getStore(): Conf<StoreShape> {
+  if (!_store) {
+    _store = new Conf<StoreShape>({ projectName: "maagpi-youtube-mcp", projectVersion: "1" });
+    migrate(_store);
+  }
+  return _store;
+}
+
+function migrate(store: Conf<StoreShape>): void {
   const legacyTokens = store.get("tokens");
   if (legacyTokens && !store.get("profiles")) {
     store.set("profiles", {
@@ -31,33 +39,32 @@ function migrate(): void {
   }
 }
 
-migrate();
 
 export const tokenStore = {
   getActiveProfileName(): string {
-    return store.get("activeProfile") ?? DEFAULT_PROFILE;
+    return getStore().get("activeProfile") ?? DEFAULT_PROFILE;
   },
 
   setActiveProfile(name: string): void {
-    const profiles = store.get("profiles") ?? {};
+    const profiles = getStore().get("profiles") ?? {};
     if (!profiles[name]) {
       throw new Error(`Profile "${name}" does not exist.`);
     }
-    store.set("activeProfile", name);
+    getStore().set("activeProfile", name);
   },
 
   listProfiles(): ChannelProfile[] {
-    const profiles = store.get("profiles") ?? {};
+    const profiles = getStore().get("profiles") ?? {};
     return Object.values(profiles);
   },
 
   getProfile(name: string): ChannelProfile | undefined {
-    const profiles = store.get("profiles") ?? {};
+    const profiles = getStore().get("profiles") ?? {};
     return profiles[name];
   },
 
   setProfile(name: string, tokens: StoredTokens, meta?: { channelId?: string; channelTitle?: string }): void {
-    const profiles = store.get("profiles") ?? {};
+    const profiles = getStore().get("profiles") ?? {};
     const existing = profiles[name];
     profiles[name] = {
       name,
@@ -66,25 +73,25 @@ export const tokenStore = {
       channelId: meta?.channelId ?? existing?.channelId,
       channelTitle: meta?.channelTitle ?? existing?.channelTitle,
     };
-    store.set("profiles", profiles);
+    getStore().set("profiles", profiles);
   },
 
   updateProfileMeta(name: string, meta: { channelId?: string; channelTitle?: string }): void {
-    const profiles = store.get("profiles") ?? {};
+    const profiles = getStore().get("profiles") ?? {};
     if (profiles[name]) {
       if (meta.channelId) profiles[name].channelId = meta.channelId;
       if (meta.channelTitle) profiles[name].channelTitle = meta.channelTitle;
-      store.set("profiles", profiles);
+      getStore().set("profiles", profiles);
     }
   },
 
   removeProfile(name: string): void {
-    const profiles = store.get("profiles") ?? {};
+    const profiles = getStore().get("profiles") ?? {};
     delete profiles[name];
-    store.set("profiles", profiles);
-    if (store.get("activeProfile") === name) {
+    getStore().set("profiles", profiles);
+    if (getStore().get("activeProfile") === name) {
       const remaining = Object.keys(profiles);
-      store.set("activeProfile", remaining[0] ?? DEFAULT_PROFILE);
+      getStore().set("activeProfile", remaining[0] ?? DEFAULT_PROFILE);
     }
   },
 
@@ -115,6 +122,6 @@ export const tokenStore = {
   },
 
   configPath(): string {
-    return store.path;
+    return getStore().path;
   },
 };

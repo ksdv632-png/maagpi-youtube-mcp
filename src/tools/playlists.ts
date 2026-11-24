@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { config } from "../config.js";
 import { withAuthRetry } from "../auth/middleware.js";
 import { buildYouTubeClient } from "../youtube/client.js";
 import {
@@ -9,17 +10,14 @@ import { getCached, setCached, invalidateRelated } from "../quota/cache.js";
 import { trackQuota, getQuotaSummary } from "../quota/tracker.js";
 import { QUOTA_COSTS } from "../quota/constants.js";
 import { YouTubeMcpError } from "../errors/types.js";
-import { buildErrorResponse } from "../errors/handlers.js";
+import { buildErrorResponse, toMcpError } from "../errors/handlers.js";
+import { toolResult } from "./result.js";
 import { YouTubeMcpErrorCode } from "../errors/codes.js";
 import {
   CreatePlaylistSchema, UpdatePlaylistSchema, DeletePlaylistSchema, GetPlaylistSchema,
   ListPlaylistsSchema, AddVideoToPlaylistSchema, RemoveVideoFromPlaylistSchema,
   ReorderPlaylistItemSchema, ListPlaylistItemsSchema,
 } from "../schemas/playlists.js";
-
-function toolResult(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
-}
 
 export function registerPlaylistTools(server: McpServer): void {
   server.registerTool(
@@ -35,8 +33,7 @@ export function registerPlaylistTools(server: McpServer): void {
         invalidateRelated("playlists.insert");
         return toolResult({ success: true, data: playlist, quota: getQuotaSummary(QUOTA_COSTS["playlists.insert"] ?? 50) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -54,30 +51,30 @@ export function registerPlaylistTools(server: McpServer): void {
         invalidateRelated("playlists.update");
         return toolResult({ success: true, data: playlist, quota: getQuotaSummary(QUOTA_COSTS["playlists.update"] ?? 50) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
 
-  server.registerTool(
-    "youtube_playlist_delete",
-    { description: "Permanently delete a playlist. Requires confirm: true.", inputSchema: DeletePlaylistSchema },
-    async (params) => {
-      try {
-        await withAuthRetry(async (auth) => {
-          const yt = buildYouTubeClient(auth);
-          await deletePlaylist(yt, params.playlistId);
-        }, params.channel);
-        trackQuota("playlists.delete", QUOTA_COSTS["playlists.delete"]);
-        invalidateRelated("playlists.delete");
-        return toolResult({ success: true, data: { deleted: params.playlistId }, quota: getQuotaSummary(QUOTA_COSTS["playlists.delete"] ?? 50) });
-      } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+  if (config.allowDestructive) {
+    server.registerTool(
+      "youtube_playlist_delete",
+      { description: "Permanently delete a playlist. Requires confirm: true.", inputSchema: DeletePlaylistSchema },
+      async (params) => {
+        try {
+          await withAuthRetry(async (auth) => {
+            const yt = buildYouTubeClient(auth);
+            await deletePlaylist(yt, params.playlistId);
+          }, params.channel);
+          trackQuota("playlists.delete", QUOTA_COSTS["playlists.delete"]);
+          invalidateRelated("playlists.delete");
+          return toolResult({ success: true, data: { deleted: params.playlistId }, quota: getQuotaSummary(QUOTA_COSTS["playlists.delete"] ?? 50) });
+        } catch (err) {
+          return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
+        }
       }
-    }
-  );
+    );
+  }
 
   server.registerTool(
     "youtube_playlist_get",
@@ -99,8 +96,7 @@ export function registerPlaylistTools(server: McpServer): void {
         setCached("playlists.get", cacheKey, playlist);
         return toolResult({ success: true, data: playlist, quota: getQuotaSummary(QUOTA_COSTS["playlists.list"] ?? 1) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -122,8 +118,7 @@ export function registerPlaylistTools(server: McpServer): void {
         setCached("playlists.list", cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(QUOTA_COSTS["playlists.list"] ?? 1) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -141,8 +136,7 @@ export function registerPlaylistTools(server: McpServer): void {
         invalidateRelated("playlistItems.insert");
         return toolResult({ success: true, data: item, quota: getQuotaSummary(QUOTA_COSTS["playlistItems.insert"] ?? 50) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -160,8 +154,7 @@ export function registerPlaylistTools(server: McpServer): void {
         invalidateRelated("playlistItems.delete");
         return toolResult({ success: true, data: { deleted: params.playlistItemId }, quota: getQuotaSummary(QUOTA_COSTS["playlistItems.delete"] ?? 50) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -179,8 +172,7 @@ export function registerPlaylistTools(server: McpServer): void {
         invalidateRelated("playlistItems.update");
         return toolResult({ success: true, data: item, quota: getQuotaSummary(QUOTA_COSTS["playlistItems.update"] ?? 50) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -202,8 +194,7 @@ export function registerPlaylistTools(server: McpServer): void {
         setCached("playlistItems.list", cacheKey, result);
         return toolResult({ success: true, data: result, quota: getQuotaSummary(QUOTA_COSTS["playlistItems.list"] ?? 1) });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
