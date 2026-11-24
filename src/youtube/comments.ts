@@ -5,7 +5,8 @@ import type { youtube_v3 } from "@googleapis/youtube";
 
 export async function listCommentThreads(
   yt: YouTubeClient,
-  videoId: string,
+  /** A video id, or `{ channelId }` to list comments across the whole channel. */
+  target: string | { channelId: string },
   params: {
     maxResults?: number;
     pageToken?: string;
@@ -17,7 +18,7 @@ export async function listCommentThreads(
     withBackoff(async () => {
       const response = await yt.commentThreads.list({
         part: ["snippet", "replies"],
-        videoId,
+        ...(typeof target === "string" ? { videoId: target } : { allThreadsRelatedToChannelId: target.channelId }),
         maxResults: params.maxResults ?? 20,
         pageToken: params.pageToken,
         order: params.order ?? "time",

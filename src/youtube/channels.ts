@@ -1,6 +1,8 @@
-import fs from "node:fs";
+import { Readable } from "node:stream";
 import { wrapApiCall } from "../errors/handlers.js";
 import { withBackoff } from "../quota/backoff.js";
+import { YouTubeMcpError } from "../errors/types.js";
+import { YouTubeMcpErrorCode } from "../errors/codes.js";
 import type { YouTubeClient } from "./client.js";
 import type { youtube_v3 } from "@googleapis/youtube";
 
@@ -16,66 +18,69 @@ export async function getChannel(
   );
 }
 
-export async function updateChannel(
-  yt: YouTubeClient,
-  params: {
-    title?: string;
-    description?: string;
-    keywords?: string[];
-    country?: string;
-    defaultLanguage?: string;
+export async function getOwnChannelId(yt: YouTubeClient): Promise<string> {
+  const channel = await getChannel(yt, ["id"]);
+  if (!channel?.id) {
+    throw new YouTubeMcpError(YouTubeMcpErrorCode.CHANNEL_NOT_FOUND, "No YouTube channel found for the connected account.");
   }
-): Promise<youtube_v3.Schema$Channel> {
-  const current = await getChannel(yt, ["snippet", "brandingSettings"]);
-
-  return wrapApiCall("channels.update", () =>
-    withBackoff(async () => {
-      const response = await yt.channels.update({
-        part: ["snippet", "brandingSettings"],
-        requestBody: {
-          id: current?.id ?? "",
-          snippet: {
-            title: params.title ?? current?.snippet?.title,
-            description: params.description ?? current?.snippet?.description,
-            defaultLanguage: params.defaultLanguage ?? current?.snippet?.defaultLanguage,
-            country: params.country ?? current?.snippet?.country,
-          },
-          brandingSettings: {
-            channel: {
-              ...current?.brandingSettings?.channel,
-              keywords: params.keywords
-                ? params.keywords.join(" ")
-                : current?.brandingSettings?.channel?.keywords,
-            },
-          },
-        },
-      });
-      return response.data;
-    }, "channels.update")
-  );
+  return channel.id;
 }
 
-export async function updateBranding(
-  yt: YouTubeClient,
-  channelId: string,
-  params: {
-    bannerImagePath?: string;
-    showRelatedChannels?: boolean;
-    featuredChannelsTitle?: string;
+/** YouTube stores keywords as one space-separated string; multi-word keywords are quoted. */
+export function formatKeywords(keywords: string[]): string {
+  return keywords
+    .map((k) => k.replace(/"/g, "").trim())
+    .filter(Boolean)
+    .map((k) => (/\s/.test(k) ? `"${k}"` : k))
+    .join(" ");
+}
+
+export interface BrandingPatch {
+  description?: string;
+  keywords?: string[];
+  country?: string;
+  defaultLanguage?: string;
+  showRelatedChannels?: boolean;
+  featuredChannelsTitle?: string;
+  featuredChannelsUrls?: string[];
+  unsubscribedTrailer?: string;
+  moderateComments?: boolean;
+  trackingAnalyticsAccountId?: string;
+  bannerExternalUrl?: string;
+}
+
+/**
+ * channels.update only accepts brandingSettings (the channel NAME, handle and avatar cannot be changed
+ * through the API). The part is overwritten as a whole, so the current settings are read first and merged.
+ */
+export async function patchBranding(yt: YouTubeClient, patch: BrandingPatch): Promise<youtube_v3.Schema$Channel> {
+  const current = await getChannel(yt, ["id", "brandingSettings"]);
+  if (!current?.id) {
+    throw new YouTubeMcpError(YouTubeMcpErrorCode.CHANNEL_NOT_FOUND, "No YouTube channel found for the connected account.");
   }
-): Promise<youtube_v3.Schema$Channel> {
+  const channelSettings: youtube_v3.Schema$ChannelSettings = { ...current.brandingSettings?.channel };
+  if (patch.description !== undefined) channelSettings.description = patch.description;
+  if (patch.keywords !== undefined) channelSettings.keywords = formatKeywords(patch.keywords);
+  if (patch.country !== undefined) channelSettings.country = patch.country.toUpperCase();
+  if (patch.defaultLanguage !== undefined) channelSettings.defaultLanguage = patch.defaultLanguage;
+  if (patch.showRelatedChannels !== undefined) channelSettings.showRelatedChannels = patch.showRelatedChannels;
+  if (patch.featuredChannelsTitle !== undefined) channelSettings.featuredChannelsTitle = patch.featuredChannelsTitle;
+  if (patch.featuredChannelsUrls !== undefined) channelSettings.featuredChannelsUrls = patch.featuredChannelsUrls;
+  if (patch.unsubscribedTrailer !== undefined) channelSettings.unsubscribedTrailer = patch.unsubscribedTrailer;
+  if (patch.moderateComments !== undefined) channelSettings.moderateComments = patch.moderateComments;
+  if (patch.trackingAnalyticsAccountId !== undefined) {
+    channelSettings.trackingAnalyticsAccountId = patch.trackingAnalyticsAccountId;
+  }
+  const image: youtube_v3.Schema$ImageSettings = { ...current.brandingSettings?.image };
+  if (patch.bannerExternalUrl !== undefined) image.bannerExternalUrl = patch.bannerExternalUrl;
+
   return wrapApiCall("channels.update", () =>
     withBackoff(async () => {
       const response = await yt.channels.update({
         part: ["brandingSettings"],
         requestBody: {
-          id: channelId,
-          brandingSettings: {
-            channel: {
-              showRelatedChannels: params.showRelatedChannels,
-              featuredChannelsTitle: params.featuredChannelsTitle,
-            },
-          },
+          id: current.id!,
+          brandingSettings: { channel: channelSettings, image },
         },
       });
       return response.data;
@@ -83,47 +88,50 @@ export async function updateBranding(
   );
 }
 
+export async function setBanner(
+  yt: YouTubeClient,
+  img: { buffer: Buffer; mimeType: string }
+): Promise<youtube_v3.Schema$Channel> {
+  const uploaded = await wrapApiCall("channelBanners.insert", () =>
+    withBackoff(async () => {
+      const response = await yt.channelBanners.insert({
+        media: { mimeType: img.mimeType, body: Readable.from(img.buffer) },
+      });
+      return response.data;
+    }, "channelBanners.insert")
+  );
+  if (!uploaded.url) {
+    throw new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, "YouTube did not return a banner URL.");
+  }
+  return patchBranding(yt, { bannerExternalUrl: uploaded.url });
+}
+
 export async function setWatermark(
   yt: YouTubeClient,
   channelId: string,
-  imagePath: string,
-  position: {
-    cornerPosition: "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
-    type: "corner";
-  },
-  timing: {
-    type: "offsetFromStart" | "offsetFromEnd";
-    offsetMs: number;
-    durationMs: number;
-  }
+  img: { buffer: Buffer; mimeType: string },
+  position: { cornerPosition: "topLeft" | "topRight" | "bottomLeft" | "bottomRight"; type: "corner" },
+  timing: { type: "offsetFromStart" | "offsetFromEnd"; offsetMs: number; durationMs: number }
 ): Promise<void> {
-  const media = fs.createReadStream(imagePath);
-
   return wrapApiCall("watermarks.set", () =>
     withBackoff(async () => {
       await yt.watermarks.set({
         channelId,
         requestBody: {
-          position: {
-            cornerPosition: position.cornerPosition,
-            type: position.type,
-          },
+          position: { cornerPosition: position.cornerPosition, type: position.type },
           timing: {
             type: timing.type,
             offsetMs: String(timing.offsetMs),
-            durationMs: String(timing.durationMs),
+            ...(timing.durationMs > 0 ? { durationMs: String(timing.durationMs) } : {}),
           },
         },
-        media: { mimeType: "image/png", body: media },
+        media: { mimeType: img.mimeType, body: Readable.from(img.buffer) },
       });
     }, "watermarks.set")
   );
 }
 
-export async function unsetWatermark(
-  yt: YouTubeClient,
-  channelId: string
-): Promise<void> {
+export async function unsetWatermark(yt: YouTubeClient, channelId: string): Promise<void> {
   return wrapApiCall("watermarks.unset", () =>
     withBackoff(async () => {
       await yt.watermarks.unset({ channelId });
@@ -162,15 +170,8 @@ export async function createChannelSection(
       const response = await yt.channelSections.insert({
         part: ["snippet", "contentDetails"],
         requestBody: {
-          snippet: {
-            type: params.type,
-            title: params.title,
-            position: params.position,
-          },
-          contentDetails: {
-            playlists: params.playlistIds,
-            channels: params.channelIds,
-          },
+          snippet: { type: params.type, title: params.title, position: params.position },
+          contentDetails: { playlists: params.playlistIds, channels: params.channelIds },
         },
       });
       return response.data;
@@ -178,10 +179,7 @@ export async function createChannelSection(
   );
 }
 
-export async function deleteChannelSection(
-  yt: YouTubeClient,
-  sectionId: string
-): Promise<void> {
+export async function deleteChannelSection(yt: YouTubeClient, sectionId: string): Promise<void> {
   return wrapApiCall("channelSections.delete", () =>
     withBackoff(async () => {
       await yt.channelSections.delete({ id: sectionId });

@@ -68,4 +68,17 @@ describe("classifyError", () => {
     expect(err.code).toBe(YouTubeMcpErrorCode.INTERNAL_ERROR);
     expect(err.retryable).toBe(false);
   });
+
+  it("maps Google's invalid_grant to AUTH_REFRESH_FAILED with a reconnect hint", () => {
+    const err = new Error("invalid_grant") as Error & { response: object };
+    err.response = { status: 400, data: { error: "invalid_grant", error_description: "Token has been expired or revoked." } };
+    const mapped = classifyError("videos.list", err);
+    expect(mapped.code).toBe(YouTubeMcpErrorCode.AUTH_REFRESH_FAILED);
+    expect(mapped.suggestedFix).toMatch(/Reconnect/);
+  });
+
+  it("never echoes credentials from library error messages", () => {
+    const mapped = classifyError("videos.list", new Error("boom Authorization: Bearer ya29.A0ARrdaMsecretsecretsecret"));
+    expect(mapped.message).not.toContain("secretsecretsecret");
+  });
 });

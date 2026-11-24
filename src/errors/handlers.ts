@@ -1,5 +1,6 @@
 import { YouTubeMcpErrorCode } from "./codes.js";
 import { YouTubeMcpError, QuotaSummary, McpErrorResponse } from "./types.js";
+import { sanitizeMessage } from "./sanitize.js";
 
 interface GaxiosErrorLike {
   response?: {
@@ -42,7 +43,21 @@ export function classifyError(methodName: string, err: unknown): YouTubeMcpError
     const firstError = apiErrors[0];
     const reason = firstError?.reason ?? "";
     const domain = firstError?.domain ?? "";
-    const apiMessage = err.response?.data?.error?.message ?? err.message ?? "Unknown API error";
+    const apiMessage = sanitizeMessage(err.response?.data?.error?.message ?? err.message ?? "Unknown API error");
+
+    const oauthError = (err.response?.data as { error?: unknown } | undefined)?.error;
+    if (oauthError === "invalid_grant" || /invalid_grant/.test(err.message ?? "")) {
+      return new YouTubeMcpError(
+        YouTubeMcpErrorCode.AUTH_REFRESH_FAILED,
+        "Google no longer accepts the saved sign-in (it was revoked or expired).",
+        {
+          retryable: false,
+          suggestedFix:
+            "Reconnect the connector in Claude (Settings → Connectors → disconnect and connect again). If the Google Cloud app is still in 'Testing' mode, switch it to 'In production' so sign-ins do not expire after 7 days.",
+          cause: err,
+        }
+      );
+    }
 
     const apiError = { status, reason, domain };
 
@@ -141,7 +156,7 @@ export function classifyError(methodName: string, err: unknown): YouTubeMcpError
     }
   }
 
-  const message = err instanceof Error ? err.message : String(err);
+  const message = sanitizeMessage(err instanceof Error ? err.message : String(err));
   return new YouTubeMcpError(
     YouTubeMcpErrorCode.INTERNAL_ERROR,
     `Unexpected error in '${methodName}': ${message}`,
@@ -149,6 +164,15 @@ export function classifyError(methodName: string, err: unknown): YouTubeMcpError
       retryable: false,
       cause: err,
     }
+  );
+}
+
+/** Convert anything thrown inside a tool handler into a safe, structured error. */
+export function toMcpError(err: unknown): YouTubeMcpError {
+  if (err instanceof YouTubeMcpError) return err;
+  return new YouTubeMcpError(
+    YouTubeMcpErrorCode.INTERNAL_ERROR,
+    sanitizeMessage(err instanceof Error ? err.message : String(err))
   );
 }
 

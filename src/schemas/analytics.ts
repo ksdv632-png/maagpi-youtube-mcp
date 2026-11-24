@@ -1,7 +1,7 @@
 import { z } from "zod";
+import { channelField } from "./common.js";
 
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format");
-const channel = z.string().optional().describe("Channel profile name. Defaults to active profile.");
 
 const videoMetrics = z.array(
   z.enum([
@@ -28,43 +28,43 @@ const channelMetrics = z.array(
 );
 
 export const VideoMetricsSchema = z.object({
-  videoId: z.string().min(1),
+  videoId: z.string().min(1).max(32),
   startDate: dateString,
   endDate: dateString,
-  metrics: videoMetrics.min(1),
-  dimensions: z.array(z.string()).optional(),
-  channel,
+  metrics: videoMetrics.min(1).max(25),
+  dimensions: z.array(z.string().max(40)).max(6).optional(),
+  ...channelField,
 });
 
 export const ChannelMetricsSchema = z.object({
   startDate: dateString,
   endDate: dateString,
-  metrics: channelMetrics.min(1),
-  dimensions: z.array(z.string()).optional(),
-  filters: z.string().optional(),
+  metrics: channelMetrics.min(1).max(25),
+  dimensions: z.array(z.string().max(40)).max(6).optional(),
+  filters: z.string().max(500).optional(),
   maxResults: z.number().int().min(1).max(200).optional(),
-  channel,
+  ...channelField,
 });
 
 export const TopVideosSchema = z.object({
   startDate: dateString,
   endDate: dateString,
-  metric: z.string().min(1),
+  metric: z.string().min(1).max(60),
   maxResults: z.number().int().min(1).max(200).default(10),
-  filters: z.string().optional(),
-  channel,
+  filters: z.string().max(500).optional(),
+  ...channelField,
 });
 
 export const AudienceRetentionSchema = z.object({
-  videoId: z.string().min(1),
+  videoId: z.string().min(1).max(32),
   startDate: dateString,
   endDate: dateString,
-  channel,
+  ...channelField,
 });
 
 export const RevenueReportSchema = z.object({
   startDate: dateString,
   endDate: dateString,
-  dimensions: z.array(z.string()).optional(),
-  channel,
+  dimensions: z.array(z.string().max(40)).max(6).optional(),
+  ...channelField,
 });

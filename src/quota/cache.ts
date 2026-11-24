@@ -1,5 +1,6 @@
 import { LRUCache } from "lru-cache";
 import { config } from "../config.js";
+import { getPrincipal } from "../auth/context.js";
 import { CACHE_TTL_MS } from "./constants.js";
 
 const cache = new LRUCache<string, object>({
@@ -12,7 +13,9 @@ function buildKey(method: string, params: Record<string, unknown>): string {
   const sorted = Object.fromEntries(
     Object.entries(params).sort(([a], [b]) => a.localeCompare(b))
   );
-  return `${method}:${JSON.stringify(sorted)}`;
+  // Scope every entry to the signed-in Google account so users can never see each other's data.
+  const scope = getPrincipal()?.sub ?? "local";
+  return `${method}:${scope}:${JSON.stringify(sorted)}`;
 }
 
 export function getCached<T>(

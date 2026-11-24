@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { getCached, setCached, invalidateMethod, clearAllCache } from "../../../src/quota/cache.js";
+import { runWithPrincipal, type RemotePrincipal } from "../../../src/auth/context.js";
 
 describe("quota cache", () => {
   beforeEach(() => {
@@ -35,5 +36,13 @@ describe("quota cache", () => {
     invalidateMethod("videos.list");
     expect(getCached("videos.list", { q: "test" })).toBeUndefined();
     expect(getCached("videos.get", { videoId: "x" })).toBeDefined();
+  });
+
+  it("never shares entries between Google accounts", () => {
+    const who = (sub: string): RemotePrincipal => ({ sub, email: `${sub}@example.com`, googleRefreshToken: "rt", clientId: "c", googleScope: "" });
+    runWithPrincipal(who("alice"), () => setCached("channels.list", {}, { channel: "alice's" }));
+    expect(runWithPrincipal(who("alice"), () => getCached("channels.list", {}))).toEqual({ channel: "alice's" });
+    expect(runWithPrincipal(who("bob"), () => getCached("channels.list", {}))).toBeUndefined();
+    expect(getCached("channels.list", {})).toBeUndefined(); // local (no principal) scope is separate too
   });
 });

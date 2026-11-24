@@ -1,23 +1,56 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getPrincipal } from "../auth/context.js";
 import { createAuthenticatedClient } from "../auth/oauth.js";
 import { tokenStore } from "../auth/token-store.js";
-import { resetAllAuthClients } from "../auth/middleware.js";
+import { getAuthClient, resetAllAuthClients } from "../auth/middleware.js";
 import { buildYouTubeClient } from "../youtube/client.js";
 import { getChannel } from "../youtube/channels.js";
 import { YouTubeMcpError } from "../errors/types.js";
-import { buildErrorResponse } from "../errors/handlers.js";
+import { buildErrorResponse, toMcpError } from "../errors/handlers.js";
 import { YouTubeMcpErrorCode } from "../errors/codes.js";
 import { getQuotaSummary } from "../quota/tracker.js";
 import {
   AddChannelSchema, SwitchChannelSchema, RemoveChannelSchema,
   ListChannelsSchema, CurrentChannelSchema,
 } from "../schemas/account.js";
-
-function toolResult(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
-}
+import { isRemote } from "../config.js";
+import { toolResult } from "./result.js";
 
 export function registerAccountTools(server: McpServer): void {
+  if (isRemote) {
+    // The remote server has exactly one identity: the Google account the owner signed in with.
+    server.registerTool(
+      "youtube_account_current",
+      {
+        description:
+          "Show which Google account and YouTube channel this connector is acting on. Call it first if the user is unsure which channel is connected.",
+        inputSchema: CurrentChannelSchema,
+      },
+      async () => {
+        try {
+          const principal = getPrincipal();
+          const auth = await getAuthClient();
+          const channel = await getChannel(buildYouTubeClient(auth), ["id", "snippet", "statistics"]);
+          return toolResult({
+            success: true,
+            data: {
+              googleAccount: principal?.email,
+              channelId: channel?.id,
+              channelTitle: channel?.snippet?.title,
+              customUrl: channel?.snippet?.customUrl,
+              subscribers: channel?.statistics?.subscriberCount,
+              videos: channel?.statistics?.videoCount,
+            },
+          });
+        } catch (err) {
+          return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
+        }
+      }
+    );
+    return;
+  }
+
+  // ── Local (stdio) multi-profile management ────────────────────────────────
   server.registerTool(
     "youtube_account_add",
     {
@@ -57,8 +90,7 @@ export function registerAccountTools(server: McpServer): void {
           },
         });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -82,8 +114,7 @@ export function registerAccountTools(server: McpServer): void {
         }));
         return toolResult({ success: true, data, activeProfile: active });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -109,8 +140,7 @@ export function registerAccountTools(server: McpServer): void {
           },
         });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -136,8 +166,7 @@ export function registerAccountTools(server: McpServer): void {
           },
         });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
@@ -159,10 +188,7 @@ export function registerAccountTools(server: McpServer): void {
         }
         const profile = tokenStore.getProfile(params.name);
         if (!profile) {
-          throw new YouTubeMcpError(
-            YouTubeMcpErrorCode.INTERNAL_ERROR,
-            `Profile "${params.name}" not found.`
-          );
+          throw new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, `Profile "${params.name}" not found.`);
         }
         tokenStore.removeProfile(params.name);
         resetAllAuthClients();
@@ -176,8 +202,7 @@ export function registerAccountTools(server: McpServer): void {
           },
         });
       } catch (err) {
-        const e = err instanceof YouTubeMcpError ? err : new YouTubeMcpError(YouTubeMcpErrorCode.INTERNAL_ERROR, String(err));
-        return toolResult(buildErrorResponse(e, getQuotaSummary(0)));
+        return toolResult(buildErrorResponse(toMcpError(err), getQuotaSummary(0)));
       }
     }
   );
